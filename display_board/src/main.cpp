@@ -2,6 +2,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
+#include <EEPROM.h>
 
 #include <string.h>
 #include <stdlib.h>
@@ -48,7 +49,7 @@ typedef struct
 } Player;
 
 Player **registered_players;
-int no_registered_players;
+uint8_t no_registered_players;
 
 void i2c_init(void)
 {
@@ -85,140 +86,177 @@ void update_screen()
     char buf[20];
     switch (menu_select)
     {
-        case IN_GAME:
-            for (uint8_t i = 3; i > 0; i--)
-            {
-                LCD_Clear();
-                LCD_GoTo(0, 0);
-                LCD_WriteData((char)(i + 48));
-                _delay_ms(1000);
-            }
+    case IN_GAME:
+        for (uint8_t i = 3; i > 0; i--)
+        {
             LCD_Clear();
             LCD_GoTo(0, 0);
-            LCD_WriteText((char *)"START!");
-            break;
+            LCD_WriteData((char)(i + 48));
+            _delay_ms(1000);
+        }
+        LCD_Clear();
+        LCD_GoTo(0, 0);
+        LCD_WriteText((char *)"START!");
+        break;
 
-        case MENU:
-            if (keypad_state == UP || keypad_state == DOWN)
+    case MENU:
+        if (keypad_state == UP || keypad_state == DOWN)
+        {
+            sprintf(buf, "[%s]", main_menu[options_select]);
+            LCD_WriteText(buf);
+            _delay_ms(100);
+            if (options_select < 1)
             {
-                sprintf(buf, "[%s]", main_menu[options_select]);
+                LCD_GoTo(1, 1);
+                sprintf(buf, "%s", main_menu[options_select + 1]);
                 LCD_WriteText(buf);
                 _delay_ms(100);
-                if (options_select < 1)
-                {
-                    LCD_GoTo(1, 1);
-                    sprintf(buf, "%s", main_menu[options_select + 1]);
-                    LCD_WriteText(buf);
-                    _delay_ms(100);
-                }
             }
-            if (keypad_state == LEFT)
+        }
+        else if (keypad_state == LEFT)
+            break;
+        else if (keypad_state == RIGHT)
+        {
+            switch (options_select)
+            {
+            case 0:
+                menu_select = CHARACTER;
                 break;
-            if (keypad_state == RIGHT){
-                switch (options_select)
-                {
-                case 0:
-                    menu_select = CHARACTER;
-                    break;
-                case 1:
-                    menu_select = LEADERBOARD;
-                    break;
-                }
-                options_select = 0;
-                update_screen();
+            case 1:
+                menu_select = LEADERBOARD;
+                break;
             }
-            break;
+            options_select = 0;
+            update_screen();
+        }
+        break;
 
-        case CHARACTER:
-            if (keypad_state == UP || keypad_state == DOWN)
+    case CHARACTER:
+        if (keypad_state == UP || keypad_state == DOWN)
+        {
+            if (options_select < no_registered_players)
             {
-                if (options_select < no_registered_players)
-                {
-                    sprintf(buf, "[%s]", registered_players[options_select]->username);
-                    LCD_WriteText(buf);
-                    _delay_ms(100);
-                }
-                if (options_select < no_registered_players - 1)
-                {
-                    LCD_GoTo(1, 1);
-                    sprintf(buf, "%s", registered_players[options_select + 1]);
-                    LCD_WriteText(buf);
-                    _delay_ms(100);
-                }
-                else
-                {
-                    if (options_select == no_registered_players - 1)
-                    {
-                        LCD_GoTo(1, 1);
-                        sprintf(buf, "new user");
-                        LCD_WriteText(buf);
-                        _delay_ms(100);
-                    }
-                    else if (options_select == no_registered_players)
-                    {
-                        sprintf(buf, "[new user]");
-                        LCD_WriteText(buf);
-                        _delay_ms(100);
-                    }
-                }
-            }
-            if(keypad_state == LEFT){
-                menu_select = MENU;
-                options_select = 0;
-                update_screen();
-                keypad_state = UP;
-            }
-            break;
-
-        case DIFFICULTY:
-            if (keypad_state == UP || keypad_state == DOWN)
-            {
-                sprintf(buf, "[%s]", difficulties[options_select]);
+                sprintf(buf, "[%s]", registered_players[options_select]->username);
                 LCD_WriteText(buf);
                 _delay_ms(100);
-                if (options_select < 2)
-                {
-                    LCD_GoTo(1, 1);
-                    sprintf(buf, "%s", difficulties[options_select + 1]);
-                    LCD_WriteText(buf);
-                    _delay_ms(100);
-                }
             }
-            if(keypad_state == LEFT){
-                menu_select = MENU;
-                options_select = 0;
-                keypad_state = UP;
-                update_screen();
-            }
-            break;
-
-        case LEADERBOARD:
-            if (keypad_state == UP || keypad_state == DOWN)
+            if (options_select < no_registered_players - 1)
             {
-                if (options_select < no_registered_players)
-                {
-                    sprintf(buf, "%s %u", registered_players[options_select]->username, registered_players[options_select]->high_score);
-                    LCD_WriteText(buf);
-                    _delay_ms(100);
-                }
-                if (options_select < no_registered_players)
+                LCD_GoTo(1, 1);
+                sprintf(buf, "%s", registered_players[options_select + 1]->username);
+                LCD_WriteText(buf);
+                _delay_ms(100);
+            }
+            else
+            {
+                if (options_select == no_registered_players - 1)
                 {
                     LCD_GoTo(1, 1);
-                    sprintf(buf, "%s %u", registered_players[options_select + 1]->username, registered_players[options_select]->high_score);
+                    sprintf(buf, "new user");
+                    LCD_WriteText(buf);
+                    _delay_ms(100);
+                }
+                else if (options_select == no_registered_players)
+                {
+                    sprintf(buf, "[new user]");
                     LCD_WriteText(buf);
                     _delay_ms(100);
                 }
             }
-            if(keypad_state == LEFT){
-                menu_select = MENU;
-                options_select = 0;
-                keypad_state = UP;
-                update_screen();
+        }
+        else if (keypad_state == LEFT)
+        {
+            menu_select = MENU;
+            options_select = 0;
+            update_screen();
+            keypad_state = UP;
+        }
+        break;
+
+    case DIFFICULTY:
+        if (keypad_state == UP || keypad_state == DOWN)
+        {
+            sprintf(buf, "[%s]", difficulties[options_select]);
+            LCD_WriteText(buf);
+            _delay_ms(100);
+            if (options_select < 2)
+            {
+                LCD_GoTo(1, 1);
+                sprintf(buf, "%s", difficulties[options_select + 1]);
+                LCD_WriteText(buf);
+                _delay_ms(100);
             }
-            if(keypad_state == RIGHT){
-                break;
+        }
+        else if (keypad_state == LEFT)
+        {
+            menu_select = MENU;
+            options_select = 0;
+            keypad_state = UP;
+            update_screen();
+        }
+        else if (keypad_state == RIGHT)
+        {
+            if (options_select < no_registered_players)
+                menu_select = IN_GAME;
+        }
+        break;
+
+    case LEADERBOARD:
+        if (keypad_state == UP || keypad_state == DOWN)
+        {
+            if (options_select < no_registered_players)
+            {
+                sprintf(buf, "%s %u", registered_players[options_select]->username, registered_players[options_select]->high_score);
+                LCD_WriteText(buf);
+                _delay_ms(100);
             }
+            if (options_select < no_registered_players)
+            {
+                LCD_GoTo(1, 1);
+                sprintf(buf, "%s %u", registered_players[options_select + 1]->username, registered_players[options_select]->high_score);
+                LCD_WriteText(buf);
+                _delay_ms(100);
+            }
+        }
+        else if (keypad_state == LEFT)
+        {
+            menu_select = MENU;
+            options_select = 0;
+            keypad_state = UP;
+            update_screen();
+        }
+        else if (keypad_state == RIGHT)
+        {
             break;
+        }
+        break;
+    }
+    return;
+}
+
+void serialize() {}
+
+void deserialize()
+{
+    int addr = 0;
+    no_registered_players = EEPROM.read(addr++);
+    if (no_registered_players == 0)
+        return;
+    registered_players = (Player **)malloc(no_registered_players * sizeof(Player *));
+    for (int i = 0; i < no_registered_players; i++)
+        registered_players[i] = (Player *)malloc(sizeof(Player));
+    int k;
+    uint8_t high_score;
+    char buff[20];
+    for (int i = 0; i < no_registered_players; i++)
+    {
+        k = 0;
+        while ((buff[k++] = (char)EEPROM.read(addr++)) != '\0')
+        {
+        }
+        high_score = (char)EEPROM.read(addr++);
+        strcpy(registered_players[i]->username, buff);
+        registered_players[i]->high_score = high_score;
     }
     return;
 }
@@ -226,14 +264,16 @@ void update_screen()
 int main(void)
 {
     i2c_init();
-    
+
     LCD_Initalize();
     LCD_Clear();
-    
+
     ADC_Init();
 
     uint16_t raw, rawOld = 0;
     update_screen();
+
+    deserialize();
 
     while (1)
     {
@@ -251,9 +291,6 @@ int main(void)
                 if (raw < 100)
                 {
                     keypad_state = RIGHT;
-                    options_select = 0;
-                    if (menu_select == DIFFICULTY && options_select < no_registered_players)
-                        menu_select = IN_GAME;
                     update_screen();
                 }
 
@@ -262,7 +299,7 @@ int main(void)
                     keypad_state = UP;
                     if (options_select == 0)
                         continue;
-                    options_select--; 
+                    options_select--;
                     update_screen();
                 }
 
@@ -282,8 +319,6 @@ int main(void)
                 else if (raw < 500)
                 {
                     keypad_state = LEFT;
-                    if (menu_select == MENU)
-                        continue;
                     options_select = 0;
                     update_screen();
                 }
