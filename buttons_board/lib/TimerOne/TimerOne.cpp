@@ -16,7 +16,7 @@
  *
  */
 
-#include "TimerOne.h"
+#include "TimerOne.hpp"
 
 TimerOne Timer1;              // preinstantiate
 

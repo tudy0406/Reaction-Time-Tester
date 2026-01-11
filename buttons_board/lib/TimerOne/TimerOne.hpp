@@ -32,7 +32,7 @@
 #define MAX_ESP32_NUM_TIMERS      4
 typedef void (*timer_callback)  (void);
 #else // not ESP32
-#include "config/known_16bit_timers.h"
+#include "known_16bit_timers.hpp"
 #if defined (__AVR_ATtiny85__)
 #define TIMER1_RESOLUTION 256UL  // Timer1 is 8 bit
 #elif defined(__AVR__)

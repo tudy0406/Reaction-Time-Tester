@@ -23,6 +23,7 @@
 #define UP_TR 250     // 131
 #define DOWN_TR 350   // 306
 #define LEFT_TR 500   // 480
+
 // keypad states
 #define SELECT 40
 #define UP 41
@@ -34,7 +35,12 @@ int keypad_state = UP;
 #define MENU 0
 #define CHARACTER 10
 #define NEW_USER 100
+
 #define DIFFICULTY 11
+#define EASY 110
+#define MEDIUM 111
+#define HARD 112
+
 #define LEADERBOARD 2
 
 int menu_select = MENU;
@@ -42,11 +48,12 @@ int options_select = 0;
 
 char main_menu[2][12] = {{'N', 'E', 'W', ' ', 'G', 'A', 'M', 'E', '\0'}, {'L', 'E', 'A', 'D', 'E', 'R', 'B', 'O', 'A', 'R', 'D', '\0'}};
 char difficulties[3][7] = {{'E', 'A', 'S', 'Y', '\0'}, {'M', 'E', 'D', 'I', 'U', 'M', '\0'}, {'H', 'A', 'R', 'D', '\0'}};
+uint8_t selected_difficulty = EASY;
 
 typedef struct
 {
     char username[10];
-    int high_score;
+    uint8_t high_score;
 } Player;
 
 Player **registered_players;
@@ -79,6 +86,91 @@ void i2c_write(uint8_t data)
     TWCR = (1 << TWEN) | (1 << TWINT);
     while (!(TWCR & (1 << TWINT)))
         ;
+}
+
+void serialize();
+void deserialize();
+int create_user();
+void update_screen();
+
+int main(void)
+{
+    uart_init(9600, 0);
+    i2c_init();
+    ADC_Init();
+    LCD_Initalize();
+    sei();
+
+    deserialize();
+
+    LCD_Clear();
+    update_screen();
+
+    uint16_t raw, rawOld = 0;
+
+    while (1)
+    {
+
+        while (menu_select != IN_GAME)
+        {
+            raw = ADC_conversion();
+            if ((raw - rawOld) < 50)
+            {
+                rawOld = raw;
+            }
+            else
+            {
+                if (raw < 250)
+                {
+                    keypad_state = UP;
+                    if (options_select == 0)
+                        continue;
+                    options_select--;
+                    update_screen();
+                }
+
+                else if (raw < 350)
+                {
+                    keypad_state = DOWN;
+                    if (menu_select == MENU && options_select == 1)
+                        continue;
+                    if ((menu_select == CHARACTER) && options_select == no_registered_players)
+                        continue;
+                    if ((menu_select == LEADERBOARD) && options_select == no_registered_players - 1)
+                        continue;
+                    if (menu_select == DIFFICULTY && options_select == 2)
+                        continue;
+                    options_select++;
+                    update_screen();
+                }
+                else if (raw < 500)
+                {
+                    keypad_state = LEFT;
+                    if (menu_select == MENU)
+                        continue;
+                    options_select = 0;
+                    update_screen();
+                }
+                else if (raw < 800)
+                {
+                    keypad_state = SELECT;
+                    if (menu_select == LEADERBOARD)
+                        continue;
+                    update_screen();
+                }
+            }
+            _delay_ms(100);
+        }
+
+        if (menu_select == IN_GAME)
+        {
+            i2c_start();
+            i2c_write((0x08 << 1) | 0); // slave address + write
+            i2c_write(selected_difficulty);               // data
+            i2c_stop();
+            _delay_ms(1000);
+        }
+    }
 }
 
 int create_user()
@@ -122,15 +214,15 @@ int create_user()
                     uart_send_byte('\b');
                     uart_send_byte(' ');
                     uart_send_byte('\b');
-                    
+
                     LCD_Clear();
                     LCD_GoTo(0, 0);
                     LCD_WriteText((char *)"max 9 chars");
                 }
-                if (data == '\n')
+                if (data == '\n' && k > 0)
                     break;
                 buff[k] = '\0';
-                if (data != '\n' && data != 8)
+                if (data != '\n' && (data != 0x08 && data != 0x7F))
                     uart_send_byte(data);
                 LCD_GoTo(0, 1);
                 LCD_WriteText(buff);
@@ -144,25 +236,27 @@ int create_user()
                     uart_send_byte('\b');
                     uart_send_byte(' ');
                     uart_send_byte('\b');
-                    
+
                     LCD_Clear();
                     LCD_GoTo(0, 0);
                     LCD_WriteText((char *)"max 9 chars");
                     LCD_GoTo(0, 1);
                     LCD_WriteText(buff);
                 }
-                if (data == '\n')
+                if (data == '\n' && k > 0)
                     break;
             }
-            if(data == 0x1B)
+            if (data == 0x1B)
                 return CHARACTER;
         }
         _delay_ms(200);
     }
     no_registered_players++;
-    realloc(registered_players, no_registered_players * sizeof(Player *));
+    registered_players = (Player **)realloc(registered_players, no_registered_players * sizeof(Player *));
+    registered_players[no_registered_players - 1] = (Player *)malloc(sizeof(Player));
     strcpy(registered_players[no_registered_players - 1]->username, buff);
-    registered_players[no_registered_players]->high_score = 0;
+    registered_players[no_registered_players - 1]->high_score = 0;
+    serialize();
     return DIFFICULTY;
 }
 
@@ -184,6 +278,7 @@ void update_screen()
         LCD_Clear();
         LCD_GoTo(0, 0);
         LCD_WriteText((char *)"START!");
+        uart_send_byte((char)(current_player + 48));
         break;
 
     case MENU:
@@ -258,7 +353,7 @@ void update_screen()
                 menu_select = DIFFICULTY;
             else if (options_select == no_registered_players)
                 menu_select = NEW_USER;
-            current_player = options_select;    
+            current_player = options_select;
             options_select = 0;
             keypad_state = UP;
             update_screen();
@@ -277,6 +372,7 @@ void update_screen()
         options_select = 0;
         keypad_state = UP;
         update_screen();
+        break;
 
     case DIFFICULTY:
         if (keypad_state == UP || keypad_state == DOWN)
@@ -295,6 +391,7 @@ void update_screen()
         else if (keypad_state == SELECT)
         {
             menu_select = IN_GAME;
+            selected_difficulty = EASY + options_select;
             options_select = 0;
             keypad_state = UP;
             update_screen();
@@ -342,7 +439,27 @@ void update_screen()
     return;
 }
 
-void serialize() {}
+void serialize()
+{
+    int addr = 0, k;
+
+    EEPROM.write(addr, no_registered_players);
+    addr += sizeof(no_registered_players);
+
+    for (int i = 0; i < no_registered_players; i++)
+    {
+        k = 0;
+        while (registered_players[i]->username[k] != '\0')
+            EEPROM.write(addr++, registered_players[i]->username[k++]);
+
+        EEPROM.write(addr, registered_players[i]->username[k]);
+        addr += sizeof(registered_players[i]->username[k]);
+
+        EEPROM.write(addr, registered_players[i]->high_score);
+        addr += sizeof(registered_players[i]->high_score);
+    }
+    return;
+}
 
 void deserialize()
 {
@@ -363,85 +480,9 @@ void deserialize()
         {
         }
         high_score = (char)EEPROM.read(addr++);
+
         strcpy(registered_players[i]->username, buff);
         registered_players[i]->high_score = high_score;
     }
     return;
-}
-
-int main(void)
-{
-    uart_init(9600, 0);
-    i2c_init();
-    ADC_Init();
-    LCD_Initalize();
-    sei();
-
-    deserialize();
-
-    LCD_Clear();
-    update_screen();
-
-    uint16_t raw, rawOld = 0;
-
-    while (1)
-    {
-
-        while (menu_select != IN_GAME)
-        {
-            raw = ADC_conversion();
-            if ((raw - rawOld) < 50)
-            {
-                rawOld = raw;
-            }
-            else
-            {
-                if (raw < 250)
-                {
-                    keypad_state = UP;
-                    if (options_select == 0)
-                        continue;
-                    options_select--;
-                    update_screen();
-                }
-
-                else if (raw < 350)
-                {
-                    keypad_state = DOWN;
-                    if (menu_select == MENU && options_select == 1)
-                        continue;
-                    if ((menu_select == CHARACTER) && options_select == no_registered_players)
-                        continue;
-                    if ((menu_select == LEADERBOARD) && options_select == no_registered_players - 1)
-                        continue;
-                    if (menu_select == DIFFICULTY && options_select == 2)
-                        continue;
-                    options_select++;
-                    update_screen();
-                }
-                else if (raw < 500)
-                {
-                    keypad_state = LEFT;
-                    if (menu_select == MENU)
-                        continue;
-                    options_select = 0;
-                    update_screen();
-                }
-                else if (raw < 800)
-                {
-                    keypad_state = SELECT;
-                    if (menu_select == LEADERBOARD)
-                        continue;
-                    update_screen();
-                }
-            }
-            _delay_ms(100);
-        }
-
-        // i2c_start();
-        // i2c_write((0x08 << 1) | 0); // slave address + write
-        // i2c_write(1); // data
-        // i2c_stop();
-        // _delay_ms(1000);
-    }
 }
