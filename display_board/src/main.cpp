@@ -19,12 +19,12 @@
 #define LED_PIN PD2
 
 // keypad states treshold / expected value
-#define RIGHT_TR 100 // 0
-#define UP_TR 250    // 131
-#define DOWN_TR 350  // 306
-#define LEFT_TR 500  // 480
+#define SELECT_TR 100 // 722
+#define UP_TR 250     // 131
+#define DOWN_TR 350   // 306
+#define LEFT_TR 500   // 480
 // keypad states
-#define RIGHT 40
+#define SELECT 40
 #define UP 41
 #define DOWN 42
 #define LEFT 43
@@ -33,6 +33,7 @@ int keypad_state = UP;
 #define IN_GAME -1
 #define MENU 0
 #define CHARACTER 10
+#define NEW_USER 100
 #define DIFFICULTY 11
 #define LEADERBOARD 2
 
@@ -44,12 +45,13 @@ char difficulties[3][7] = {{'E', 'A', 'S', 'Y', '\0'}, {'M', 'E', 'D', 'I', 'U',
 
 typedef struct
 {
-    char username[6];
+    char username[10];
     int high_score;
 } Player;
 
 Player **registered_players;
 uint8_t no_registered_players;
+uint8_t current_player;
 
 void i2c_init(void)
 {
@@ -77,6 +79,91 @@ void i2c_write(uint8_t data)
     TWCR = (1 << TWEN) | (1 << TWINT);
     while (!(TWCR & (1 << TWINT)))
         ;
+}
+
+int create_user()
+{
+    char buff[10];
+    buff[0] = '\0';
+    int k = 0;
+    uint8_t data = 0;
+    LCD_Clear();
+    LCD_GoTo(0, 0);
+    LCD_WriteText((char *)"max 9 chars");
+
+    while (1)
+    {
+        if (uart_read_count() > 0)
+        {
+            data = uart_read();
+            if (k < 9)
+            {
+                if (data >= 'a' && data <= 'z')
+                    buff[k++] = data;
+                else if (data >= 'A' && data <= 'Z')
+                    buff[k++] = data;
+                else if (data >= '0' && data <= '9')
+                {
+                    if (k == 0)
+                        continue;
+                    else
+                        buff[k++] = data;
+                }
+                else if (data == '-' || data == '_')
+                {
+                    if (k == 0)
+                        continue;
+                    else
+                        buff[k++] = data;
+                }
+                if ((data == 0x08 || data == 0x7F) && k > 0)
+                {
+                    k--;
+                    uart_send_byte('\b');
+                    uart_send_byte(' ');
+                    uart_send_byte('\b');
+                    
+                    LCD_Clear();
+                    LCD_GoTo(0, 0);
+                    LCD_WriteText((char *)"max 9 chars");
+                }
+                if (data == '\n')
+                    break;
+                buff[k] = '\0';
+                if (data != '\n' && data != 8)
+                    uart_send_byte(data);
+                LCD_GoTo(0, 1);
+                LCD_WriteText(buff);
+            }
+            else
+            {
+                if ((data == 0x08 || data == 0x7F) && k > 0)
+                {
+                    k--;
+                    buff[k] = '\0';
+                    uart_send_byte('\b');
+                    uart_send_byte(' ');
+                    uart_send_byte('\b');
+                    
+                    LCD_Clear();
+                    LCD_GoTo(0, 0);
+                    LCD_WriteText((char *)"max 9 chars");
+                    LCD_GoTo(0, 1);
+                    LCD_WriteText(buff);
+                }
+                if (data == '\n')
+                    break;
+            }
+            if(data == 0x1B)
+                return CHARACTER;
+        }
+        _delay_ms(200);
+    }
+    no_registered_players++;
+    realloc(registered_players, no_registered_players * sizeof(Player *));
+    strcpy(registered_players[no_registered_players - 1]->username, buff);
+    registered_players[no_registered_players]->high_score = 0;
+    return DIFFICULTY;
 }
 
 void update_screen()
@@ -115,7 +202,7 @@ void update_screen()
         }
         else if (keypad_state == LEFT)
             break;
-        else if (keypad_state == RIGHT)
+        else if (keypad_state == SELECT)
         {
             switch (options_select)
             {
@@ -127,6 +214,7 @@ void update_screen()
                 break;
             }
             options_select = 0;
+            keypad_state = UP;
             update_screen();
         }
         break;
@@ -164,14 +252,31 @@ void update_screen()
                 }
             }
         }
+        else if (keypad_state == SELECT)
+        {
+            if (options_select < no_registered_players)
+                menu_select = DIFFICULTY;
+            else if (options_select == no_registered_players)
+                menu_select = NEW_USER;
+            current_player = options_select;    
+            options_select = 0;
+            keypad_state = UP;
+            update_screen();
+        }
         else if (keypad_state == LEFT)
         {
             menu_select = MENU;
             options_select = 0;
-            update_screen();
             keypad_state = UP;
+            update_screen();
         }
         break;
+
+    case NEW_USER:
+        menu_select = create_user();
+        options_select = 0;
+        keypad_state = UP;
+        update_screen();
 
     case DIFFICULTY:
         if (keypad_state == UP || keypad_state == DOWN)
@@ -187,6 +292,13 @@ void update_screen()
                 _delay_ms(100);
             }
         }
+        else if (keypad_state == SELECT)
+        {
+            menu_select = IN_GAME;
+            options_select = 0;
+            keypad_state = UP;
+            update_screen();
+        }
         else if (keypad_state == LEFT)
         {
             menu_select = MENU;
@@ -194,11 +306,7 @@ void update_screen()
             keypad_state = UP;
             update_screen();
         }
-        else if (keypad_state == RIGHT)
-        {
-            if (options_select < no_registered_players)
-                menu_select = IN_GAME;
-        }
+
         break;
 
     case LEADERBOARD:
@@ -210,10 +318,10 @@ void update_screen()
                 LCD_WriteText(buf);
                 _delay_ms(100);
             }
-            if (options_select < no_registered_players)
+            if (options_select < no_registered_players - 1)
             {
-                LCD_GoTo(1, 1);
-                sprintf(buf, "%s %u", registered_players[options_select + 1]->username, registered_players[options_select]->high_score);
+                LCD_GoTo(0, 1);
+                sprintf(buf, "%s %u", registered_players[options_select + 1]->username, registered_players[options_select + 1]->high_score);
                 LCD_WriteText(buf);
                 _delay_ms(100);
             }
@@ -225,7 +333,7 @@ void update_screen()
             keypad_state = UP;
             update_screen();
         }
-        else if (keypad_state == RIGHT)
+        else if (keypad_state == SELECT)
         {
             break;
         }
@@ -263,17 +371,18 @@ void deserialize()
 
 int main(void)
 {
+    uart_init(9600, 0);
     i2c_init();
-
-    LCD_Initalize();
-    LCD_Clear();
-
     ADC_Init();
-
-    uint16_t raw, rawOld = 0;
-    update_screen();
+    LCD_Initalize();
+    sei();
 
     deserialize();
+
+    LCD_Clear();
+    update_screen();
+
+    uint16_t raw, rawOld = 0;
 
     while (1)
     {
@@ -287,14 +396,7 @@ int main(void)
             }
             else
             {
-
-                if (raw < 100)
-                {
-                    keypad_state = RIGHT;
-                    update_screen();
-                }
-
-                else if (raw < 250)
+                if (raw < 250)
                 {
                     keypad_state = UP;
                     if (options_select == 0)
@@ -308,21 +410,32 @@ int main(void)
                     keypad_state = DOWN;
                     if (menu_select == MENU && options_select == 1)
                         continue;
-                    if ((menu_select == CHARACTER || menu_select == LEADERBOARD) && options_select == no_registered_players)
+                    if ((menu_select == CHARACTER) && options_select == no_registered_players)
+                        continue;
+                    if ((menu_select == LEADERBOARD) && options_select == no_registered_players - 1)
                         continue;
                     if (menu_select == DIFFICULTY && options_select == 2)
                         continue;
                     options_select++;
                     update_screen();
                 }
-
                 else if (raw < 500)
                 {
                     keypad_state = LEFT;
+                    if (menu_select == MENU)
+                        continue;
                     options_select = 0;
                     update_screen();
                 }
+                else if (raw < 800)
+                {
+                    keypad_state = SELECT;
+                    if (menu_select == LEADERBOARD)
+                        continue;
+                    update_screen();
+                }
             }
+            _delay_ms(100);
         }
 
         // i2c_start();
