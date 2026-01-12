@@ -4,59 +4,111 @@
 #include <avr/sleep.h>
 #include <util/delay.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "HD44780.hpp"
 #include "TimerOne.hpp"
 #include "uart_buffer.hpp"
 
-#define SLAVE_ADDRESS 0x08 // 7-bit address
+/* ================= DEFINES ================= */
 
-// difficulties
+#define SLAVE_ADDRESS 0x08
+#define CMD_START_GAME 0xA0
+
 #define EASY 110
 #define MEDIUM 111
 #define HARD 112
 
 #define NO_TRIES 10
 
+/* ================= GLOBALS ================= */
+
 volatile uint8_t received_difficulty = 0;
-uint8_t data_ready = 0;
+volatile uint8_t data_ready = 0;
+volatile uint8_t rx_index = 0;
+
 uint8_t points = 0;
-uint8_t point_per_difficulty[3] = {10, 15, 25}; // EASY, MEDIUM, HARD
-uint8_t penalty_points = 5;                     //-5 points if you press the wrong button
+uint8_t point_per_difficulty[3] = {10, 15, 25};
+uint8_t penalty_points = 5;
 
 unsigned long timer_period = 0;
 volatile uint8_t current_led = 0xFF, last_led = 0xFF;
-volatile bool waiting_for_input = false;
-volatile bool button_pressed = false;
+volatile uint8_t waiting_for_input = 0;
+volatile uint8_t button_pressed = 0;
 
 int leds[3] = {PORTB0, PORTB1, PORTB2};
 int buttons[3] = {PORTB3, PORTB4, PORTB5};
-uint8_t button_history[3] = {0, 0, 0};
+
+/* ================= I2C TX ================= */
+
+volatile uint8_t tx_score = 0;
+
+/* ================= I2C INIT ================= */
 
 void i2c_slave_init(void)
 {
     TWAR = (SLAVE_ADDRESS << 1);
-    TWCR = (1 << TWEN) | (1 << TWEA) | (1 << TWINT) | (1 << TWIE);
-
+    TWCR = (1 << TWEN) | (1 << TWEA) | (1 << TWIE);
     PORTC |= (1 << PC4) | (1 << PC5);
 }
+
+/* ================= I2C ISR ================= */
 
 ISR(TWI_vect)
 {
     uint8_t status = TWSR & 0xF8;
+    static uint8_t rx_cmd = 0;
 
-    if (status == 0x80)
-    { // Data received
-        received_difficulty = TWDR;
-        data_ready = 1;
+    switch (status)
+    {
+        /* -------- SLAVE RECEIVER -------- */
+
+        case 0x60: // Own SLA+W received
+        case 0x68: // Arbitration lost, SLA+W received
+            rx_index = 0;
+            break;
+
+        case 0x80: // Data received, ACK returned
+            if (rx_index == 0)
+            {
+                rx_cmd = TWDR;  // command byte
+            }
+            else if (rx_index == 1)
+            {
+                if (rx_cmd == CMD_START_GAME)
+                {
+                    received_difficulty = TWDR;
+                    data_ready = 1;   // ✅ exactly one place
+                }
+            }
+            rx_index++;
+            break;
+
+        case 0xA0: // STOP or repeated START
+            rx_index = 0;
+            break;
+
+        /* -------- SLAVE TRANSMITTER -------- */
+
+        case 0xA8: // SLA+R received
+        case 0xB8: // Data transmitted, ACK received
+            TWDR = tx_score;   // send score only
+            break;
+
+        case 0xC0: // NACK received
+        case 0xC8: // Last data byte transmitted
+            break;
+
     }
 
-    TWCR |= (1 << TWINT) | (1 << TWEN) | (1 << TWEA) | (1 << TWIE); // Clear flag, keep interrupt enabled
+    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA) | (1 << TWIE);
 }
+
+
+/* ================= TIMER ISR ================= */
 
 void timerISR(void)
 {
-
     if (current_led != 0xFF)
         PORTB &= ~(1 << leds[current_led]);
 
@@ -66,56 +118,93 @@ void timerISR(void)
 
     PORTB |= (1 << leds[current_led]);
 
-    waiting_for_input = false;
-    button_pressed = false;
+    waiting_for_input = 0;
+    button_pressed = 0;
+    Timer1.detachInterrupt();
 }
+
+/* ================= RANDOM ================= */
 
 void seed_random(void)
 {
-    ADMUX = (1 << REFS0);      // AVcc reference
-    ADCSRA = (1 << ADEN) | 7;  // enable ADC, prescaler 128
+    ADMUX = (1 << REFS0);
+    ADCSRA = (1 << ADEN) | 7;
     ADCSRA |= (1 << ADSC);
-    while (ADCSRA & (1 << ADSC));
+    while (ADCSRA & (1 << ADSC))
+        ;
     srand(ADC);
 }
 
-/*uint8_t i2c_slave_receive(void)
+/* ================= GAME ================= */
+
+void setup_game(void)
 {
-    // Wait for address or data
-    while (!(TWCR & (1 << TWINT)));
+    timer_period = 750000UL * (1 + (2 - (received_difficulty - EASY)));
+    points = 0;
+    current_led = rand() % 3;
+    PORTB ^= (1 << leds[current_led]);
+    return;
+}
 
-    uint8_t status = TWSR & 0xF8;
+void start_game(void)
+{
+    setup_game();
 
-    // SLA+W received
-    if (status == 0x60 || status == 0x68) {
-        TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
-        while (!(TWCR & (1 << TWINT)));
-        status = TWSR & 0xF8;
+    for (int t = 0; t < NO_TRIES; t++)
+    {
+        waiting_for_input = 1;
+        button_pressed = 0;
+        Timer1.initialize(timer_period);
+        Timer1.attachInterrupt(timerISR);
+
+        while (waiting_for_input)
+        {
+            if (!button_pressed)
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    if (PINB & (1 << buttons[i]))
+                    {
+                        button_pressed = 1;
+
+                        if (i != current_led)
+                        {
+                            if (points >= penalty_points)
+                                points -= penalty_points;
+                            else
+                                points = 0;
+                        }
+                        else
+                        {
+                            points += point_per_difficulty[received_difficulty - EASY];
+                        }
+                    }
+                }
+            }
+            _delay_ms(20);
+        }
     }
+    Timer1.stop();
+}
 
-    // Data received
-    if (status == 0x80) {
-        uint8_t data = TWDR;
-        TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
-        return data;
-    }
+void stop_game(){
+    PORTB &= ~((1 << leds[0]) | (1 << leds[1]) | (1 << leds[2]));
+    points = 0;
+}
 
-    // Default fallback
-    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
-    return 0;
-}*/
+/* ================= MAIN ================= */
 
-void setup_game();
-void start_game();
-
-/*int main(void)
+int main(void)
 {
     i2c_slave_init();
     sei();
+
     LCD_Initalize();
     LCD_Clear();
+    uart_init(9600, 0);
 
     set_sleep_mode(SLEEP_MODE_IDLE);
+    seed_random();
 
     for (int i = 0; i < 3; i++)
     {
@@ -126,84 +215,20 @@ void start_game();
 
     while (1)
     {
-        PORTB &= ~((1 << leds[0]) | (1 << leds[1]) | (1 << leds[2]));
         sleep_enable();
         sleep_cpu();
         sleep_disable();
 
         if (data_ready)
         {
-            timer_period = 1000000 * (1 + (2 - (received_difficulty - EASY))); // for: EASY 1.5 seconds, MEDIUM 1 second, HARD 0.5 seconds
-
+            char c[3];
+            sprintf(c,"%u", received_difficulty);
+            uart_send_string((uint8_t *)c);
+            data_ready = 0;
+            
             start_game();
-            data_ready = 0; // clear flag
+            tx_score = points;
+            stop_game();
         }
     }
-}*/
-
-int main(void)
-{
-
-    sei();
-    uart_init(9600, 0);
-
-    for (int i = 0; i < 3; i++)
-    {
-        DDRB |= (1 << leds[i]);
-        PORTB &= ~(1 << leds[i]);
-        DDRB &= ~(1 << buttons[i]);
-    }
-    for (int i = 3; i > 0; i--)
-    {
-        uart_send_byte((char)(i + 48));
-        _delay_ms(1000);
-    }
-
-    seed_random();
-    received_difficulty = HARD;
-    start_game();
-
-    char buff[4];
-    sprintf(buff, "%u", points);
-    uart_send_string((unsigned char *)buff);
-    return 0;
-}
-
-void start_game()
-{
-    setup_game();   
-    for (int i = 0; i < NO_TRIES; i++)
-    {
-        waiting_for_input = true;
-        while (waiting_for_input)
-        {
-            if (!button_pressed)
-            {
-                for (int i = 0; i < 3; i++)
-                {
-                    if (PINB & (1 << buttons[i]))
-                    {
-                        button_pressed = true;
-                        if (i != current_led)
-                        {
-                            if (points >= penalty_points)
-                                points -= penalty_points;
-                            else
-                                points = 0;
-                        }
-                        else
-                            points += point_per_difficulty[received_difficulty - EASY];
-                    }
-                }
-            }
-            _delay_ms(50);
-        }
-    }
-}
-
-void setup_game(){
-    timer_period = 1500000 * (1 + (2 - (received_difficulty - EASY))); // for: EASY 2.25 seconds, MEDIUM 1.5 second, HARD 0.75 seconds
-    Timer1.initialize(timer_period);
-    Timer1.attachInterrupt(timerISR);
-    current_led = rand()%3;
 }
