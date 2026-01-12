@@ -12,11 +12,12 @@
 #include "libADC.hpp"
 #include "uart_buffer.hpp"
 
-#define F_CPU 16000000UL
+//#define F_CPU 16000000UL
 #define SCL_CLOCK 100000L
-#define LED_DDR DDRD
-#define LED_PORT PORTD
-#define LED_PIN PD2
+
+#define CMD_START_GAME 0xA0
+#define CMD_GAME_OVER 0xA1
+
 
 // keypad states treshold / expected value
 #define SELECT_TR 100 // 722
@@ -31,17 +32,21 @@
 #define LEFT 43
 int keypad_state = UP;
 
+#define NO_TRIES 10
+
+
 #define IN_GAME -1
 #define MENU 0
 #define CHARACTER 10
 #define NEW_USER 100
+#define GAME_OVER 2
 
 #define DIFFICULTY 11
 #define EASY 110
 #define MEDIUM 111
 #define HARD 112
 
-#define LEADERBOARD 2
+#define LEADERBOARD 3
 
 int menu_select = MENU;
 int options_select = 0;
@@ -49,6 +54,7 @@ int options_select = 0;
 char main_menu[2][12] = {{'N', 'E', 'W', ' ', 'G', 'A', 'M', 'E', '\0'}, {'L', 'E', 'A', 'D', 'E', 'R', 'B', 'O', 'A', 'R', 'D', '\0'}};
 char difficulties[3][7] = {{'E', 'A', 'S', 'Y', '\0'}, {'M', 'E', 'D', 'I', 'U', 'M', '\0'}, {'H', 'A', 'R', 'D', '\0'}};
 uint8_t selected_difficulty = EASY;
+uint8_t last_score = 0;
 
 typedef struct
 {
@@ -62,9 +68,8 @@ uint8_t current_player;
 
 void i2c_init(void)
 {
-    TWSR = 0x00; // prescaler
+    TWSR = 0x00;
     TWBR = ((F_CPU / SCL_CLOCK) - 16) / 2;
-
     PORTC |= (1 << PC4) | (1 << PC5);
 }
 
@@ -87,6 +92,32 @@ void i2c_write(uint8_t data)
     while (!(TWCR & (1 << TWINT)))
         ;
 }
+
+uint8_t i2c_read_ack(void)
+{
+    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
+    while (!(TWCR & (1 << TWINT)))
+        ;
+    return TWDR;
+}
+
+uint8_t i2c_read_nack(void)
+{
+    TWCR = (1 << TWINT) | (1 << TWEN); // NO TWEA
+    while (!(TWCR & (1 << TWINT)))
+        ;
+    return TWDR;
+}
+
+void delay_ms(uint16_t ms)
+{
+    char a[10000];
+    sprintf(a, "%u", ms);
+    uart_send_string((uint8_t*)a);
+    while (ms--)
+        _delay_ms(1);
+}
+
 
 void serialize();
 void deserialize();
@@ -164,11 +195,24 @@ int main(void)
 
         if (menu_select == IN_GAME)
         {
+            last_score = 0;
             i2c_start();
-            i2c_write((0x08 << 1) | 0); // slave address + write
-            i2c_write(selected_difficulty);               // data
+            i2c_write((0x08 << 1) | 0);
+            i2c_write(CMD_START_GAME);
+            i2c_write(selected_difficulty);
             i2c_stop();
-            _delay_ms(1000);
+
+            delay_ms(((NO_TRIES+1)*(1+(2-(selected_difficulty-EASY))))* 750);
+
+            //wait for game to end
+            i2c_start();
+            i2c_write((0x08 << 1) | 1);
+            last_score = i2c_read_nack();
+            i2c_stop();
+
+            menu_select = GAME_OVER;
+            keypad_state = UP;
+            update_screen();
         }
     }
 }
@@ -278,7 +322,32 @@ void update_screen()
         LCD_Clear();
         LCD_GoTo(0, 0);
         LCD_WriteText((char *)"START!");
-        uart_send_byte((char)(current_player + 48));
+        break;
+
+    case GAME_OVER:
+        if (keypad_state != UP)
+        {
+            menu_select = MENU;
+            keypad_state = UP;
+            options_select = 0;
+            update_screen();
+        }
+        else
+        {
+            sprintf(buf, "%u", last_score);
+            if (registered_players[current_player]->high_score < last_score)
+            {
+                LCD_WriteText((char *)"NEW HIGHSCORE:");
+                registered_players[current_player]->high_score = last_score;
+                serialize();
+            }
+            else
+            {
+                LCD_WriteText((char *)"SCORE:");
+            }
+            LCD_GoTo(0, 1);
+            LCD_WriteText(buf);
+        }
         break;
 
     case MENU:
