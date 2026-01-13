@@ -12,60 +12,91 @@
 #include "libADC.hpp"
 #include "uart_buffer.hpp"
 
-//#define F_CPU 16000000UL
+// i2c clock speed definition
 #define SCL_CLOCK 100000L
 
+// command sent to slave to start the game
 #define CMD_START_GAME 0xA0
+
+// command reserved for game over (not used here)
 #define CMD_GAME_OVER 0xA1
 
+// adc threshold values for keypad buttons
+#define SELECT_TR 100
+#define UP_TR 250
+#define DOWN_TR 350
+#define LEFT_TR 500
 
-// keypad states treshold / expected value
-#define SELECT_TR 100 // 722
-#define UP_TR 250     // 131
-#define DOWN_TR 350   // 306
-#define LEFT_TR 500   // 480
-
-// keypad states
+// keypad button identifiers
 #define SELECT 40
 #define UP 41
 #define DOWN 42
 #define LEFT 43
+
+// current keypad state
 int keypad_state = UP;
 
+// number of rounds in one game
 #define NO_TRIES 10
 
-
+// menu states
 #define IN_GAME -1
 #define MENU 0
 #define CHARACTER 10
 #define NEW_USER 100
 #define GAME_OVER 2
 
+// difficulty menu state
 #define DIFFICULTY 11
+
+// difficulty values sent to slave
 #define EASY 110
 #define MEDIUM 111
 #define HARD 112
 
+// leaderboard menu state
 #define LEADERBOARD 3
 
+// current menu and option selection
 int menu_select = MENU;
 int options_select = 0;
 
-char main_menu[2][12] = {{'N', 'E', 'W', ' ', 'G', 'A', 'M', 'E', '\0'}, {'L', 'E', 'A', 'D', 'E', 'R', 'B', 'O', 'A', 'R', 'D', '\0'}};
-char difficulties[3][7] = {{'E', 'A', 'S', 'Y', '\0'}, {'M', 'E', 'D', 'I', 'U', 'M', '\0'}, {'H', 'A', 'R', 'D', '\0'}};
+// text for main menu
+char main_menu[2][12] = {
+    {'N','E','W',' ','G','A','M','E','\0'},
+    {'L','E','A','D','E','R','B','O','A','R','D','\0'}
+};
+
+// text for difficulty menu
+char difficulties[3][7] = {
+    {'E','A','S','Y','\0'},
+    {'M','E','D','I','U','M','\0'},
+    {'H','A','R','D','\0'}
+};
+
+// selected difficulty level
 uint8_t selected_difficulty = EASY;
+
+// last score received from slave
 uint8_t last_score = 0;
 
+// player structure holding username and high score
 typedef struct
 {
     char username[10];
     uint8_t high_score;
 } Player;
 
+// dynamic list of registered players
 Player **registered_players;
+
+// number of registered players
 uint8_t no_registered_players;
+
+// index of current player
 uint8_t current_player;
 
+// initialize i2c as master
 void i2c_init(void)
 {
     TWSR = 0x00;
@@ -73,42 +104,44 @@ void i2c_init(void)
     PORTC |= (1 << PC4) | (1 << PC5);
 }
 
+// send start condition on i2c bus
 void i2c_start(void)
 {
     TWCR = (1 << TWSTA) | (1 << TWEN) | (1 << TWINT);
-    while (!(TWCR & (1 << TWINT)))
-        ;
+    while (!(TWCR & (1 << TWINT)));
 }
 
+// send stop condition on i2c bus
 void i2c_stop(void)
 {
     TWCR = (1 << TWSTO) | (1 << TWEN) | (1 << TWINT);
 }
 
+// write one byte to i2c bus
 void i2c_write(uint8_t data)
 {
     TWDR = data;
     TWCR = (1 << TWEN) | (1 << TWINT);
-    while (!(TWCR & (1 << TWINT)))
-        ;
+    while (!(TWCR & (1 << TWINT)));
 }
 
+// read one byte from i2c and send ack
 uint8_t i2c_read_ack(void)
 {
     TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
-    while (!(TWCR & (1 << TWINT)))
-        ;
+    while (!(TWCR & (1 << TWINT)));
     return TWDR;
 }
 
+// read one byte from i2c and send nack
 uint8_t i2c_read_nack(void)
 {
-    TWCR = (1 << TWINT) | (1 << TWEN); // NO TWEA
-    while (!(TWCR & (1 << TWINT)))
-        ;
+    TWCR = (1 << TWINT) | (1 << TWEN);
+    while (!(TWCR & (1 << TWINT)));
     return TWDR;
 }
 
+// custom delay function used to wait for game completion
 void delay_ms(uint16_t ms)
 {
     char a[10000];
@@ -118,22 +151,28 @@ void delay_ms(uint16_t ms)
         _delay_ms(1);
 }
 
-
+// function prototypes
 void serialize();
 void deserialize();
 int create_user();
 void update_screen();
 
+// main program entry point
 int main(void)
 {
+    // initialize uart for debugging
     uart_init(9600, 0);
+
+    // initialize i2c, adc and lcd
     i2c_init();
     ADC_Init();
     LCD_Initalize();
     sei();
 
+    // load players from eeprom
     deserialize();
 
+    // clear lcd and show menu
     LCD_Clear();
     update_screen();
 
@@ -141,16 +180,19 @@ int main(void)
 
     while (1)
     {
-
+        // handle menu navigation
         while (menu_select != IN_GAME)
         {
             raw = ADC_conversion();
+
+            // debounce adc reading
             if ((raw - rawOld) < 50)
             {
                 rawOld = raw;
             }
             else
             {
+                // move up in menu
                 if (raw < 250)
                 {
                     keypad_state = UP;
@@ -159,7 +201,7 @@ int main(void)
                     options_select--;
                     update_screen();
                 }
-
+                // move down in menu
                 else if (raw < 350)
                 {
                     keypad_state = DOWN;
@@ -174,6 +216,7 @@ int main(void)
                     options_select++;
                     update_screen();
                 }
+                // go back in menu
                 else if (raw < 500)
                 {
                     keypad_state = LEFT;
@@ -182,6 +225,7 @@ int main(void)
                     options_select = 0;
                     update_screen();
                 }
+                // select menu option
                 else if (raw < 800)
                 {
                     keypad_state = SELECT;
@@ -193,23 +237,28 @@ int main(void)
             _delay_ms(100);
         }
 
+        // start game state
         if (menu_select == IN_GAME)
         {
             last_score = 0;
+
+            // send start command and difficulty to slave
             i2c_start();
             i2c_write((0x08 << 1) | 0);
             i2c_write(CMD_START_GAME);
             i2c_write(selected_difficulty);
             i2c_stop();
 
-            delay_ms(((NO_TRIES+1)*(1+(2-(selected_difficulty-EASY))))* 750);
+            // wait estimated game duration
+            delay_ms(((NO_TRIES+1)*(1+(2-(selected_difficulty-EASY))))*750);
 
-            //wait for game to end
+            // read score from slave
             i2c_start();
             i2c_write((0x08 << 1) | 1);
             last_score = i2c_read_nack();
             i2c_stop();
 
+            // go to game over menu
             menu_select = GAME_OVER;
             keypad_state = UP;
             update_screen();

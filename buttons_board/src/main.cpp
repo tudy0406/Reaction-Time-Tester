@@ -10,41 +10,44 @@
 #include "TimerOne.hpp"
 #include "uart_buffer.hpp"
 
-/* ================= DEFINES ================= */
-
+// i2c slave address
 #define SLAVE_ADDRESS 0x08
+
+// command received from master
 #define CMD_START_GAME 0xA0
 
+// difficulty values
 #define EASY 110
 #define MEDIUM 111
 #define HARD 112
 
+// number of rounds
 #define NO_TRIES 10
 
-/* ================= GLOBALS ================= */
-
+// variables received via i2c
 volatile uint8_t received_difficulty = 0;
 volatile uint8_t data_ready = 0;
 volatile uint8_t rx_index = 0;
 
+// game scoring variables
 uint8_t points = 0;
 uint8_t point_per_difficulty[3] = {10, 15, 25};
 uint8_t penalty_points = 5;
 
+// timer and game state variables
 unsigned long timer_period = 0;
 volatile uint8_t current_led = 0xFF, last_led = 0xFF;
 volatile uint8_t waiting_for_input = 0;
 volatile uint8_t button_pressed = 0;
 
+// led and button pins
 int leds[3] = {PORTB0, PORTB1, PORTB2};
 int buttons[3] = {PORTB3, PORTB4, PORTB5};
 
-/* ================= I2C TX ================= */
-
+// score to be sent to master
 volatile uint8_t tx_score = 0;
 
-/* ================= I2C INIT ================= */
-
+// initialize i2c as slave
 void i2c_slave_init(void)
 {
     TWAR = (SLAVE_ADDRESS << 1);
@@ -52,8 +55,7 @@ void i2c_slave_init(void)
     PORTC |= (1 << PC4) | (1 << PC5);
 }
 
-/* ================= I2C ISR ================= */
-
+// i2c interrupt routine
 ISR(TWI_vect)
 {
     uint8_t status = TWSR & 0xF8;
@@ -61,52 +63,49 @@ ISR(TWI_vect)
 
     switch (status)
     {
-        /* -------- SLAVE RECEIVER -------- */
-
-        case 0x60: // Own SLA+W received
-        case 0x68: // Arbitration lost, SLA+W received
+        // slave write address received
+        case 0x60:
+        case 0x68:
             rx_index = 0;
             break;
 
-        case 0x80: // Data received, ACK returned
+        // data received from master
+        case 0x80:
             if (rx_index == 0)
             {
-                rx_cmd = TWDR;  // command byte
+                rx_cmd = TWDR;
             }
             else if (rx_index == 1)
             {
                 if (rx_cmd == CMD_START_GAME)
                 {
                     received_difficulty = TWDR;
-                    data_ready = 1;   // ✅ exactly one place
+                    data_ready = 1;
                 }
             }
             rx_index++;
             break;
 
-        case 0xA0: // STOP or repeated START
+        // stop or repeated start received
+        case 0xA0:
             rx_index = 0;
             break;
 
-        /* -------- SLAVE TRANSMITTER -------- */
-
-        case 0xA8: // SLA+R received
-        case 0xB8: // Data transmitted, ACK received
-            TWDR = tx_score;   // send score only
+        // slave transmit mode
+        case 0xA8:
+        case 0xB8:
+            TWDR = tx_score;
             break;
 
-        case 0xC0: // NACK received
-        case 0xC8: // Last data byte transmitted
+        case 0xC0:
+        case 0xC8:
             break;
-
     }
 
     TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA) | (1 << TWIE);
 }
 
-
-/* ================= TIMER ISR ================= */
-
+// timer interrupt used for reaction timeout
 void timerISR(void)
 {
     if (current_led != 0xFF)
@@ -123,8 +122,7 @@ void timerISR(void)
     Timer1.detachInterrupt();
 }
 
-/* ================= RANDOM ================= */
-
+// initialize random generator
 void seed_random(void)
 {
     ADMUX = (1 << REFS0);
@@ -135,8 +133,7 @@ void seed_random(void)
     srand(ADC);
 }
 
-/* ================= GAME ================= */
-
+// prepare game settings
 void setup_game(void)
 {
     timer_period = 750000UL * (1 + (2 - (received_difficulty - EASY)));
@@ -146,6 +143,7 @@ void setup_game(void)
     return;
 }
 
+// main game execution
 void start_game(void)
 {
     setup_game();
@@ -187,21 +185,17 @@ void start_game(void)
     Timer1.stop();
 }
 
+// stop game and clear outputs
 void stop_game(){
     PORTB &= ~((1 << leds[0]) | (1 << leds[1]) | (1 << leds[2]));
     points = 0;
 }
 
-/* ================= MAIN ================= */
-
+// main loop
 int main(void)
 {
     i2c_slave_init();
     sei();
-
-    LCD_Initalize();
-    LCD_Clear();
-    uart_init(9600, 0);
 
     set_sleep_mode(SLEEP_MODE_IDLE);
     seed_random();
@@ -221,9 +215,6 @@ int main(void)
 
         if (data_ready)
         {
-            char c[3];
-            sprintf(c,"%u", received_difficulty);
-            uart_send_string((uint8_t *)c);
             data_ready = 0;
             
             start_game();
